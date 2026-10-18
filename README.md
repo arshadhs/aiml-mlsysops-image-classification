@@ -1,4 +1,4 @@
-# aiml-mlsysops-image-classification
+# aiml-mlsysops-parallel-cifar10
 
 ## 1. Overview
 
@@ -14,6 +14,7 @@ CIFAR-10 consists of 60,000 colour images (32×32 pixels) across 10 classes (50,
 
 ## 4. CNN Architecture
 
+```mermaid
 
 flowchart TD
     A["CIFAR-10 Input Image<br/>3 × 32 × 32"]
@@ -46,10 +47,12 @@ flowchart TD
     style I fill:#CE93D8,stroke:#8E24AA,color:#000
     style J fill:#E1BEE7,stroke:#8E24AA,color:#000
     style K fill:#90CAF9,stroke:#1E88E5,color:#000
-
+    
+```
 
 ## 5. Implementation
 
+```mermaid
 
 flowchart TD
     A["GitHub Repository<br/>Python + PyTorch"]
@@ -100,24 +103,11 @@ flowchart TD
     style L fill:#C8E6C9,stroke:#2E7D32,color:#000
     style M fill:#90CAF9,stroke:#1E88E5,color:#000
 
+```
+
+```
 
 ```text
-
-cd /d C:\gitHub\aiml-mlsysops-parallel-cifar10
-python -m venv .venv
-venv\Scripts\activate
-python -m venv .venv
-venv\Scripts\activate
-.venv\Scripts\activate.bat
-where python
-python -m pip install --upgrade pip
-python -m pip install -e ".[dev]"
-
-(.venv) C:\gitHub\aiml-mlsysops-parallel-cifar10>python -c "import torch; import torchvision; print('PyTorch:', torch.__version__); print('Torchvision:', torchvision.__version__); print('CUDA:', torch.cuda.is_available())"
-PyTorch: 2.14.1+cpu
-Torchvision: 0.29.1+cpu
-CUDA: False
-
 C:\gitHub\aiml-mlsysops-parallel-cifar10\
 │
 ├── README.md
@@ -188,6 +178,53 @@ C:\gitHub\aiml-mlsysops-parallel-cifar10\
 
 ## 9. Results and Analysis
 
+Performance results and analysis will be added after the CPU and GPU benchmark experiments are completed.
+
 ## 10. Installation and Usage
+
+### Prerequisites
+- Python 3.10+ with compatible PyTorch packages
+- Git
+- Windows, Linux or macOS
+- GPU optional
+
+### Environment Setup (Windows CMD)
+
+```cmd
+cd /d C:\gitHub\aiml-mlsysops-parallel-cifar10
+
+python -m venv .venv
+.venv\Scripts\activate.bat
+
+python -m pip install --upgrade pip
+python -m pip install -e ".[dev]"
+```
+
+Create the virtual environment only once.
+For later sessions, activate the existing environment.
+
+### Verify PyTorch
+
+```cmd
+python -c "import torch; print(torch.__version__)"
+```
+
+### Run Dataset Tests
+
+```cmd
+python -m pytest tests/test_data.py -v
+```
+
+### Current Verified Environment
+
+- Python: 3.14.4
+- PyTorch: 2.14.1+cpu
+- Torchvision: 0.29.1+cpu
+- CPU: Intel Core i7-8665U
+- Physical cores: 4
+- Logical processors: 8
+- CIFAR-10: 50,000 training / 10,000 testing images
+- Dataset tests: 4 passed
+```
 
 ## 11. References
