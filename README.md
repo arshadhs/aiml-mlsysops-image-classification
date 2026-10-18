@@ -105,8 +105,6 @@ flowchart TD
 
 ```
 
-```
-
 ```text
 C:\gitHub\aiml-mlsysops-parallel-cifar10\
 │
@@ -173,6 +171,14 @@ C:\gitHub\aiml-mlsysops-parallel-cifar10\
 ## 6. Technology Stack
 
 ## 7. Experimental Configurations
+
+| ID | Platform | Workers | Configuration | Objective |
+|---|---|---:|---|---|
+| EXP-01 | Local CPU | 1 | Single-process training | Establish baseline performance |
+| EXP-02 | Local CPU | 2 | PyTorch DDP (Gloo) | Measure CPU parallel speedup |
+| EXP-03 | Local CPU | 4 | PyTorch DDP (Gloo) | Evaluate CPU scalability |
+| EXP-04 | Google Colab GPU | 1 | CUDA training | Evaluate GPU acceleration |
+| EXP-05 | AWS Cloud GPU (Optional) | 1, 2, 4 | PyTorch DDP (NCCL) | Evaluate multi-GPU scalability |
 
 ## 8. Performance Metrics
 
