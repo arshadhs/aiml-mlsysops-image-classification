@@ -180,7 +180,97 @@ C:\gitHub\aiml-mlsysops-parallel-cifar10\
 | EXP-04 | Google Colab GPU | 1 | CUDA training | Evaluate GPU acceleration |
 | EXP-05 | AWS Cloud GPU (Optional) | 1, 2, 4 | PyTorch DDP (NCCL) | Evaluate multi-GPU scalability |
 
+**Proposed CPU Worker Allocation:**
+
+| Experiment | DDP Processes | Intra-op Threads per Process | Total Intra-op Threads |
+|---|---:|---:|---:|
+| EXP-01 | 1 | 4 | 4 |
+| EXP-02 | 2 | 2 | 4 |
+| EXP-03 | 4 | 1 | 4 |
+
+**Experimental Controls**
+
+To ensure meaningful comparisons:
+
+- Use the same CNN architecture and CIFAR-10 dataset.
+- Maintain a consistent global batch size for worker-scaling experiments.
+- Use consistent training epochs, optimisation settings, and random seeds where practical.
+- Ensure the complete training dataset is processed per epoch.
+- Record hardware specifications and software versions.
+- Repeat benchmark runs to reduce measurement variability.
+- Measure CPU worker scaling independently of CPU-to-GPU hardware acceleration.
+
+**Expected Analysis**
+
+The experiments will investigate:
+
+1. Whether increasing workers reduces training time.
+2. Whether throughput increases with parallelism.
+3. How parallel efficiency changes as workers increase.
+4. Whether communication and synchronisation introduce significant overhead.
+5. Whether distributed training maintains comparable classification accuracy.
+6. How GPU acceleration compares with CPU execution.
+
+
 ## 8. Performance Metrics
+
+The system will measure the following performance metrics to evaluate parallel and distributed CNN training.
+
+**Required Metrics**
+
+| Metric | Formula / Measurement | Purpose |
+|---|---|---|
+| Speedup | S(N) = T₁ / Tₙ | Measures acceleration compared with single-worker training |
+| Parallel Efficiency | E(N) = S(N) / N × 100% | Measures how effectively parallel workers are utilised |
+| Communication Cost | Synchronisation / All-Reduce time per step | Measures distributed communication overhead |
+| Response Time | Wall-clock time per training epoch | Measures end-to-end epoch duration, including data loading and synchronisation |
+| Accuracy Gap | Acc₁ − Accₙ | Measures classification accuracy differences between baseline and parallel training |
+
+Where:
+
+- **T₁:** Training time using one worker.
+- **Tₙ:** Training time using N workers.
+- **N:** Number of parallel training workers.
+- **Acc₁:** Test accuracy using one worker.
+- **Accₙ:** Test accuracy using N workers.
+
+**Additional Metrics**
+
+| Metric | Formula / Measurement | Purpose |
+|---|---|---|
+| Throughput | Images processed / Training time | Measures training samples processed per second |
+| Total Training Time | Wall-clock duration of the complete training run | Measures overall training cost |
+| Convergence | Test accuracy versus elapsed training time | Evaluates how quickly the model learns |
+| Communication Overhead (%) | Communication time / Training time × 100% | Estimates communication overhead as a proportion of execution time |
+| CPU / GPU Utilisation | Hardware utilisation measurements | Helps identify underutilised computing resources |
+| Memory Usage | Peak CPU RAM / GPU memory consumption | Evaluates hardware resource requirements |
+
+Communication and computation may overlap during DDP execution. Communication timings and overhead percentages will therefore be reported with their measurement methodology clearly identified.
+
+**Planned Performance Visualisations**
+
+The following graphs will be generated from measured experimental results:
+
+1. **Workers vs Training Time** — How training duration changes as worker count increases.
+2. **Workers vs Speedup** — Actual speedup compared with ideal linear speedup.
+3. **Workers vs Parallel Efficiency** — Efficiency changes as parallelism increases.
+4. **Workers vs Throughput** — Images processed per second.
+5. **Computation vs Communication Time** — Distribution of execution time across major operations.
+6. **Accuracy vs Training Time** — Model convergence across configurations.
+7. **CPU vs GPU Training Performance** — Hardware acceleration comparison.
+
+**Performance Evaluation Objectives**
+
+The evaluation will determine:
+
+- Whether parallelism improves training performance.
+- Whether additional workers produce proportional speedup.
+- What limits system scalability.
+- Whether communication overhead outweighs computational benefits.
+- Whether model accuracy remains comparable across configurations.
+- Which configuration offers the best balance of training time, efficiency, and computing resources.
+
+The experiments will evaluate both successful speedups and performance degradation, supported by measured results and bottleneck analysis.
 
 ## 9. Results and Analysis
 
@@ -221,7 +311,7 @@ python -c "import torch; print(torch.__version__)"
 python -m pytest tests/test_data.py -v
 ```
 
-### Current Verified Environment
+### Local Verified Environment
 
 - Python: 3.14.4
 - PyTorch: 2.14.1+cpu
@@ -231,6 +321,6 @@ python -m pytest tests/test_data.py -v
 - Logical processors: 8
 - CIFAR-10: 50,000 training / 10,000 testing images
 - Dataset tests: 4 passed
-```
+
 
 ## 11. References
