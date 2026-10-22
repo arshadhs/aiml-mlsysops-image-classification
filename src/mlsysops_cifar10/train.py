@@ -11,6 +11,8 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 
+from datetime import datetime
+
 from mlsysops_cifar10.data import load_cifar10
 from mlsysops_cifar10.model import CIFAR10CNN
 
@@ -132,7 +134,8 @@ def main():
             f"Accuracy: {accuracy:.2f}%"
         )
 
-    output = Path("results/benchmarks/cpu_baseline.csv")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output = Path(f"results/benchmarks/cpu_baseline_{timestamp}.csv")   
     output.parent.mkdir(parents=True, exist_ok=True)
 
     with output.open("w", newline="") as file:
