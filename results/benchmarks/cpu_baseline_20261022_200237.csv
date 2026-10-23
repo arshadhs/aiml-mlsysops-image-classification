@@ -1,0 +1,2 @@
+train_loss,epoch_seconds,throughput,images_processed,epoch,test_accuracy
+2.3122293949127197,0.5725925000151619,223.5446674495573,128,1,11.79
