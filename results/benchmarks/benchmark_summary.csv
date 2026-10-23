@@ -2,3 +2,5 @@ configuration,platform,device,processes,threads_per_process,training_seconds,thr
 CPU 1x4,Windows,CPU,1,4,326.4,765.93,1.0,69.37
 DDP 2x2,Windows,CPU,2,2,242.41,1031.33,1.346,68.65
 DDP 4x1,Windows,CPU,4,1,227.0,1101.33,1.438,69.09
+Kaggle T4 1 GPU,Kaggle,CUDA,1,4,45.78,5461.19,,69.31
+Kaggle T4 2 GPUs,Kaggle,CUDA,2,4,26.27,9517.09,,68.82

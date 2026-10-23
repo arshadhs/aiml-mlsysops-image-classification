@@ -201,6 +201,184 @@ def save_summary(summary):
     return output
 
 
+
+def plot_gpu_scaling(summary, figures_dir):
+    """Plot GPU speedup and parallel efficiency.
+
+    Uses the measured single-GPU training time as the baseline.
+    Only Kaggle CUDA experiments are included.
+    """
+    gpu_runs = [
+        row for row in summary
+        if row["device"].lower() == "cuda"
+        and row["platform"].lower() == "kaggle"
+    ]
+
+    if not gpu_runs:
+        return
+
+    # Sort configurations by GPU/process count.
+    gpu_runs.sort(key=lambda row: int(row["processes"]))
+
+    # Find the single-GPU reference measurement.
+    baseline = next(
+        (
+            row for row in gpu_runs
+            if int(row["processes"]) == 1
+        ),
+        None,
+    )
+
+    if baseline is None:
+        return
+
+    baseline_time = float(baseline["training_seconds"])
+
+    labels = []
+    speedups = []
+    efficiencies = []
+
+    for row in gpu_runs:
+        gpu_count = int(row["processes"])
+        training_time = float(row["training_seconds"])
+
+        # Strong-scaling speedup relative to one GPU.
+        speedup = baseline_time / training_time
+
+        # Parallel efficiency relative to ideal linear speedup.
+        efficiency = 100.0 * speedup / gpu_count
+
+        labels.append(f"{gpu_count} GPU")
+        speedups.append(speedup)
+        efficiencies.append(efficiency)
+
+    figures_dir = Path(figures_dir)
+    figures_dir.mkdir(parents=True, exist_ok=True)
+
+    # GPU scaling speedup.
+    plt.figure(figsize=(7, 5))
+    plt.bar(labels, speedups)
+    # Ideal speedup equals the number of GPUs.
+    plt.plot(
+        labels,
+        [int(row["processes"]) for row in gpu_runs],
+        linestyle="--",
+        marker="o",
+        label="Ideal scaling",
+    )
+    plt.ylabel("Speedup (×)")
+    plt.title("GPU Strong Scaling — Speedup")
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(figures_dir / "gpu_speedup.png", dpi=150)
+    plt.close()
+
+    # GPU parallel efficiency.
+    plt.figure(figsize=(7, 5))
+    plt.bar(labels, efficiencies)
+    plt.axhline(100, linestyle="--", label="Ideal efficiency")
+    plt.ylabel("Parallel efficiency (%)")
+    plt.title("GPU Strong Scaling — Parallel Efficiency")
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(figures_dir / "gpu_efficiency.png", dpi=150)
+    plt.close()
+
+
+def plot_scaling_comparison(summary):
+    """Compare CPU and GPU scaling using separate reference baselines.
+
+    CPU experiments maintain a fixed total of four PyTorch threads.
+    GPU experiments scale from one to two physical Tesla T4 GPUs.
+
+    The two series represent different scaling experiments.
+    """
+    cpu_runs = sorted(
+        [
+            row for row in summary
+            if row["device"] == "CPU"
+            and row["platform"] == "Windows"
+        ],
+        key=lambda row: int(row["processes"]),
+    )
+
+    gpu_runs = sorted(
+        [
+            row for row in summary
+            if row["device"] == "CUDA"
+            and row["platform"] == "Kaggle"
+        ],
+        key=lambda row: int(row["processes"]),
+    )
+
+    if not cpu_runs or not gpu_runs:
+        return
+
+    # Reference configurations for each independent experiment.
+    cpu_baseline = next(
+        row for row in cpu_runs if row["processes"] == 1
+    )
+    gpu_baseline = next(
+        row for row in gpu_runs if row["processes"] == 1
+    )
+
+    cpu_time = float(cpu_baseline["training_seconds"])
+    gpu_time = float(gpu_baseline["training_seconds"])
+
+    cpu_processes = [row["processes"] for row in cpu_runs]
+    gpu_processes = [row["processes"] for row in gpu_runs]
+
+    cpu_speedups = [
+        cpu_time / float(row["training_seconds"])
+        for row in cpu_runs
+    ]
+
+    gpu_speedups = [
+        gpu_time / float(row["training_seconds"])
+        for row in gpu_runs
+    ]
+
+    plt.figure(figsize=(8, 5))
+
+    plt.plot(
+        cpu_processes,
+        cpu_speedups,
+        marker="o",
+        linewidth=2,
+        label="CPU DDP (fixed 4-thread budget)",
+    )
+
+    plt.plot(
+        gpu_processes,
+        gpu_speedups,
+        marker="s",
+        linewidth=2,
+        label="GPU DDP (Tesla T4)",
+    )
+
+    # Reference speedup of each single-process configuration.
+    plt.axhline(
+        1.0,
+        color="gray",
+        linestyle=":",
+        label="Baseline (1.00×)",
+    )
+
+    plt.xlabel("Number of training processes / GPUs")
+    plt.ylabel("Speedup relative to respective baseline (×)")
+    plt.title("CPU and GPU Scaling Comparison")
+    plt.xticks(sorted(set(cpu_processes + gpu_processes)))
+    plt.grid(alpha=0.3)
+    plt.legend()
+    plt.tight_layout()
+
+    plt.savefig(
+        FIGURE_DIR / "scaling_comparison.png",
+        dpi=180,
+    )
+    plt.close()
+
+
 def main():
     """Generate CPU scaling and cross-platform performance figures."""
     FIGURE_DIR.mkdir(parents=True, exist_ok=True)
@@ -208,6 +386,17 @@ def main():
     experiments = load_experiments()
     summary = create_summary(experiments)
 
+    # Compare observed CPU and GPU scaling on one chart.
+    plot_scaling_comparison(summary)
+
+    # Compare epoch-level training times across all five configurations.
+    line_chart(
+        experiments,
+        "epoch_seconds",
+        "Training time (seconds)",
+        "all_epoch_time.png",
+    )
+    
     # Restrict parallel-scaling comparisons to the same CPU machine.
     cpu_experiments = [
         exp for exp in experiments
@@ -267,6 +456,10 @@ def main():
             f"Accuracy {row['final_accuracy']:.2f}%"
         )
 
+    # Generate GPU scaling charts when CUDA experiments are present.
+    # Generate GPU speedup and parallel efficiency charts.
+    plot_gpu_scaling(summary, FIGURE_DIR)
+    
     print(f"\nSummary saved: {output}")
     print(f"Figures saved: {FIGURE_DIR}")
 

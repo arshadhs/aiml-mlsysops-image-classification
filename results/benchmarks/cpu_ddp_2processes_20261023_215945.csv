@@ -1,2 +1,0 @@
-train_loss,epoch_seconds,throughput,images_processed,epoch,test_accuracy,processes,threads_per_process,global_batch_size
-2.288008081912994,1.6142737000482157,792.92625529473,1280,1,11.03,2,2,128

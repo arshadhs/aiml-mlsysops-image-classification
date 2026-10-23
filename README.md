@@ -1,326 +1,323 @@
-# aiml-mlsysops-parallel-cifar10
+# Parallel and Distributed CIFAR-10 Training — ML Systems Optimisation
 
-## 1. Overview
+A reproducible PyTorch project comparing single-process CPU training, CPU-based Distributed Data Parallel (DDP), single-GPU training, and two-GPU DDP on the CIFAR-10 image classification task.
 
-Design, implement, and evaluate a parallelised or distributed machine learning system for training an image classification model on the CIFAR-10 dataset.
+**Course:** ML Systems Optimisation (MLSysOps), BITS Pilani  
+**Implementation:** Python, PyTorch, torchvision, Gloo, NCCL, Docker, Kaggle, Matplotlib
 
-## 2. Objectives
+## 1. Overview and objectives
 
-Model architecture, parallelism strategy, execution platform, and development framework — and rigorously justify each decision.
+This project designs, implements, and evaluates parallel and distributed machine-learning training, with an emphasis on systems performance rather than maximizing model accuracy.
 
-## 3. Dataset — CIFAR-10
+The objectives are to:
 
-CIFAR-10 consists of 60,000 colour images (32×32 pixels) across 10 classes (50,000 training / 10,000 test). It is a well-understood benchmark, allowing to focus effort on the systems and optimisation aspects rather than dataset preparation.
+1. Implement a common convolutional neural network (CNN) and training pipeline for CIFAR-10.
+2. Compare one, two, and four CPU training processes under a **fixed total budget of four PyTorch intra-op threads**.
+3. Compare one NVIDIA Tesla T4 GPU against two T4 GPUs using synchronous data-parallel training.
+4. Measure training time, throughput, speedup, parallel efficiency (where meaningful), and test accuracy.
+5. Provide reproducible training commands, Docker packaging, benchmark CSVs, and generated visualizations.
 
-## 4. CNN Architecture
+## 2. Dataset — CIFAR-10
+
+CIFAR-10 has **60,000 RGB images** of size **32 × 32**, covering 10 object classes: **50,000 training images** and **10,000 test images**. The same dataset and preprocessing are used in every benchmark.
+
+- Preprocessing: `torchvision.transforms.ToTensor()` only.
+- No image augmentation or normalization is applied in these experiments.
+- Each full benchmark uses **5 epochs**, with 50,000 training images per epoch.
+- Test accuracy is evaluated after every epoch, but **evaluation time is excluded** from the reported training duration.
+- The dataset is downloaded into `data/` automatically and should not be committed to Git.
+
+## 3. CNN architecture
+
+The compact CNN contains **545,098 trainable parameters**.
 
 ```mermaid
-
 flowchart TD
-    A["CIFAR-10 Input Image<br/>3 × 32 × 32"]
-
-    B["Convolution Layer 1<br/>3 → 32 channels, 3×3 kernel"]
-    C["ReLU Activation"]
-    D["Max Pooling 2×2<br/>32 × 16 × 16"]
-
-    E["Convolution Layer 2<br/>32 → 64 channels, 3×3 kernel"]
-    F["ReLU Activation"]
-    G["Max Pooling 2×2<br/>64 × 8 × 8"]
-
+    A["CIFAR-10 image<br/>3 × 32 × 32"]
+    B["Conv2d<br/>3 → 32, 3×3, padding 1"]
+    C["ReLU"]
+    D["MaxPool2d 2×2<br/>32 × 16 × 16"]
+    E["Conv2d<br/>32 → 64, 3×3, padding 1"]
+    F["ReLU"]
+    G["MaxPool2d 2×2<br/>64 × 8 × 8"]
     H["Flatten<br/>4096 features"]
-    I["Fully Connected Layer<br/>4096 → 128"]
-    J["ReLU Activation"]
-    K["Output Layer<br/>128 → 10 class scores"]
-
-    A --> B --> C --> D
-    D --> E --> F --> G
-    G --> H --> I --> J --> K
-
-    style A fill:#90CAF9,stroke:#1E88E5,color:#000
-    style B fill:#CE93D8,stroke:#8E24AA,color:#000
-    style C fill:#E1BEE7,stroke:#8E24AA,color:#000
-    style D fill:#C8E6C9,stroke:#2E7D32,color:#000
-    style E fill:#CE93D8,stroke:#8E24AA,color:#000
-    style F fill:#E1BEE7,stroke:#8E24AA,color:#000
-    style G fill:#C8E6C9,stroke:#2E7D32,color:#000
-    style H fill:#FFE0B2,stroke:#EF6C00,color:#000
-    style I fill:#CE93D8,stroke:#8E24AA,color:#000
-    style J fill:#E1BEE7,stroke:#8E24AA,color:#000
-    style K fill:#90CAF9,stroke:#1E88E5,color:#000
-    
+    I["Linear<br/>4096 → 128"]
+    J["ReLU"]
+    K["Linear<br/>128 → 10 class scores"]
+    A --> B --> C --> D --> E --> F --> G --> H --> I --> J --> K
 ```
 
-## 5. Implementation
+**Common training settings:** Adam optimizer, learning rate `0.001`, cross-entropy loss, global batch size `128`, five epochs, seed `42`. The architecture and optimizer are held constant across the experiments.
+
+## 4. Parallelism and implementation
 
 ```mermaid
-
 flowchart TD
-    A["GitHub Repository<br/>Python + PyTorch"]
-    B["CIFAR-10 Dataset<br/>50,000 Train + 10,000 Test"]
-    C["Implement CNN<br/>Unit Tests + Validation"]
-
-    D["Local CPU Baseline<br/>1 Training Process"]
-    E["Distributed CPU Training<br/>2 and 4 DDP Processes"]
-
-    F["Google Colab<br/>Single GPU Training"]
-    G["Optional AWS Cloud<br/>1, 2 and 4 GPU DDP"]
-
-    H["CPU Scalability Analysis<br/>1 vs 2 vs 4 Processes"]
-    I["CPU vs GPU Comparison"]
-    J["Optional Multi-GPU<br/>Scalability Analysis"]
-
-    K["Performance Metrics<br/>Throughput, Speedup, Efficiency<br/>Epoch Time, Communication, Accuracy"]
-
-    L["Visualisations and Analysis<br/>Graphs, Bottlenecks, Deviations"]
-    M["GitHub Documentation<br/>Assignment Report"]
-
-    A --> B --> C --> D
-    D --> E
-    E --> H
-
+    A["Shared CIFAR-10 dataset and CNN"]
+    B["Windows CPU<br/>1 process × 4 threads"]
+    C["Windows CPU DDP / Gloo<br/>2 × 2 or 4 × 1"]
+    D["Kaggle / CUDA<br/>1 Tesla T4"]
+    E["Kaggle / DDP + NCCL<br/>2 Tesla T4 GPUs"]
+    F["Per-epoch CSV metrics"]
+    G["Manifest + visualise.py"]
+    H["Tables and figures"]
+    A --> B
+    A --> C
+    A --> D
+    A --> E
+    B --> F
+    C --> F
+    D --> F
     E --> F
-    F --> I
-    F -.-> G
-    G --> J
-
-    H --> K
-    I --> K
-    J --> K
-
-    K --> L --> M
-
-    style A fill:#90CAF9,stroke:#1E88E5,color:#000
-    style B fill:#C8E6C9,stroke:#2E7D32,color:#000
-    style C fill:#CE93D8,stroke:#8E24AA,color:#000
-    style D fill:#90CAF9,stroke:#1E88E5,color:#000
-    style E fill:#90CAF9,stroke:#1E88E5,color:#000
-    style F fill:#C8E6C9,stroke:#2E7D32,color:#000
-    style G fill:#FFE0B2,stroke:#EF6C00,color:#000
-    style H fill:#CE93D8,stroke:#8E24AA,color:#000
-    style I fill:#CE93D8,stroke:#8E24AA,color:#000
-    style J fill:#CE93D8,stroke:#8E24AA,color:#000
-    style K fill:#FFE0B2,stroke:#EF6C00,color:#000
-    style L fill:#C8E6C9,stroke:#2E7D32,color:#000
-    style M fill:#90CAF9,stroke:#1E88E5,color:#000
-
+    F --> G --> H
 ```
+
+### CPU training
+
+- **Single process:** the CNN runs using four PyTorch intra-op CPU threads.
+- **CPU DDP:** `torch.multiprocessing.spawn` creates two or four workers; each worker has its own model replica and a partition of the training dataset through `DistributedSampler`.
+- **Gradient synchronization:** DDP synchronizes gradients during `loss.backward()` using **Gloo All-Reduce**. Each worker then updates its own matching model replica.
+- **Control:** `1 × 4`, `2 × 2`, and `4 × 1` all allocate **four intra-op threads in total**. These runs investigate process/communication overhead and scheduling with a fixed thread budget; they are **not** a conventional 1-core versus 2-core versus 4-core strong-scaling experiment.
+
+### GPU training
+
+- **One GPU:** one process trains the CNN on `cuda:0`.
+- **Two GPUs:** one process runs per T4 (`cuda:0`, `cuda:1`), and DDP synchronizes gradients via **NCCL**.
+- **Global batch size:** remains 128. With two GPUs, each worker trains on 64 images per step.
+- **Timing:** CUDA work is synchronized around the epoch timer; distributed elapsed time is aggregated across ranks.
+
+### Docker
+
+The CPU training application is packaged in a Linux Docker image using Python 3.12 and CPU-only PyTorch. Docker is used for portability and functional verification. Its short smoke-test timing is **not** included in the five full benchmark configurations.
+
+## 5. Project layout
 
 ```text
-C:\gitHub\aiml-mlsysops-parallel-cifar10\
-│
+.
 ├── README.md
 ├── pyproject.toml
-├── .gitignore
-├── LICENSE
-│
-├── .github/
-│   └── workflows/
-│       └── tests.yml
-│
-├── configs/
-│   ├── cpu_baseline.yaml
-│   ├── cpu_ddp.yaml
-│   └── gpu.yaml
-│
+├── Dockerfile
+├── .dockerignore
 ├── src/
 │   └── mlsysops_cifar10/
 │       ├── __init__.py
-│       ├── config.py
 │       ├── data.py
 │       ├── model.py
 │       ├── train.py
-│       ├── evaluate.py
-│       ├── distributed.py
-│       ├── metrics.py
-│       └── utils.py
-│
-├── experiments/
-│   ├── benchmark.py
-│   ├── profile.py
-│   └── plot_results.py
-│
-├── notebooks/
-│   └── colab_gpu.ipynb
-│
-├── tests/
-│   ├── test_data.py
-│   ├── test_model.py
-│   ├── test_training.py
-│   └── test_distributed.py
-│
-├── docs/
-│   ├── architecture.md
-│   ├── methodology.md
-│   ├── experiments.md
-│   └── findings.md
-│
+│       └── visualise.py
 ├── results/
-│   ├── README.md
 │   ├── benchmarks/
+│   │   ├── experiments.csv
+│   │   ├── benchmark_summary.csv
+│   │   └── <timestamped full-run CSV files>
 │   └── figures/
-│
-├── report/
-│   └── assignment-report.docx
-│
-├── data/                  # Git ignored
-├── checkpoints/           # Git ignored
-└── runs/                  # Git ignored
-
+│       └── <generated PNG figures>
+├── data/                      # Downloaded CIFAR-10; Git-ignored
+└── notebooks/                 # Kaggle notebook, if exported
 ```
 
-## 6. Technology Stack
+Other repository directories, such as `configs/` and `tests/`, may be present. The training and visualization commands below do not depend on unused scaffolding.
 
-## 7. Experimental Configurations
+## 6. Experimental configurations and results
 
-| ID | Platform | Workers | Configuration | Objective |
-|---|---|---:|---|---|
-| EXP-01 | Local CPU | 1 | Single-process training | Establish baseline performance |
-| EXP-02 | Local CPU | 2 | PyTorch DDP (Gloo) | Measure CPU parallel speedup |
-| EXP-03 | Local CPU | 4 | PyTorch DDP (Gloo) | Evaluate CPU scalability |
-| EXP-04 | Google Colab GPU | 1 | CUDA training | Evaluate GPU acceleration |
-| EXP-05 | AWS Cloud GPU (Optional) | 1, 2, 4 | PyTorch DDP (NCCL) | Evaluate multi-GPU scalability |
+All entries below are measurements from **one complete five-epoch run per configuration**. Throughput is computed as 250,000 training images divided by the sum of epoch training times.
 
-**Proposed CPU Worker Allocation:**
+| ID | Platform | Training configuration | Time (s) ↓ | Throughput (images/s) ↑ | Final test accuracy |
+|---|---|---|---:|---:|---:|
+| EXP-01 | Windows laptop | CPU, 1 process × 4 threads | 326.40 | 765.9 | 69.37% |
+| EXP-02 | Windows laptop | CPU DDP / Gloo, 2 processes × 2 threads | 242.41 | 1,031.3 | 68.65% |
+| EXP-03 | Windows laptop | CPU DDP / Gloo, 4 processes × 1 thread | 227.00 | 1,101.3 | 69.09% |
+| EXP-04 | Kaggle | 1 × NVIDIA Tesla T4 / CUDA | 45.78 | 5,461.2 | 69.31% |
+| EXP-05 | Kaggle | 2 × NVIDIA Tesla T4 / DDP + NCCL | **26.27** | **9,517.1** | 68.82% |
 
-| Experiment | DDP Processes | Intra-op Threads per Process | Total Intra-op Threads |
-|---|---:|---:|---:|
-| EXP-01 | 1 | 4 | 4 |
-| EXP-02 | 2 | 2 | 4 |
-| EXP-03 | 4 | 1 | 4 |
+### CPU process configurations
 
-**Experimental Controls**
+| Experiment | Processes | Intra-op threads/process | Total allocated intra-op threads | Relative training-time speedup |
+|---|---:|---:|---:|---:|
+| EXP-01 | 1 | 4 | 4 | 1.00× |
+| EXP-02 | 2 | 2 | 4 | 1.35× |
+| EXP-03 | 4 | 1 | 4 | 1.44× |
 
-To ensure meaningful comparisons:
+The CPU DDP-4 configuration took about **30.5% less measured training time** than the single-process CPU baseline. As the total intra-op thread budget remains fixed, this is **observed configuration speedup**, not a claim of near-linear scaling with added CPU cores.
 
-- Use the same CNN architecture and CIFAR-10 dataset.
-- Maintain a consistent global batch size for worker-scaling experiments.
-- Use consistent training epochs, optimisation settings, and random seeds where practical.
-- Ensure the complete training dataset is processed per epoch.
-- Record hardware specifications and software versions.
-- Repeat benchmark runs to reduce measurement variability.
-- Measure CPU worker scaling independently of CPU-to-GPU hardware acceleration.
+### GPU scaling
 
-**Expected Analysis**
+Using the single T4 as the **GPU-specific baseline**:
 
-The experiments will investigate:
+\[
+S_2 = \frac{T_{1\ GPU}}{T_{2\ GPU}} = \frac{45.78}{26.27} \approx 1.74
+\]
 
-1. Whether increasing workers reduces training time.
-2. Whether throughput increases with parallelism.
-3. How parallel efficiency changes as workers increase.
-4. Whether communication and synchronisation introduce significant overhead.
-5. Whether distributed training maintains comparable classification accuracy.
-6. How GPU acceleration compares with CPU execution.
+\[
+E_2 = \frac{S_2}{2} \times 100\% \approx 87.1\%
+\]
 
+Two T4 GPUs reduced measured training time by approximately **42.6%** relative to one T4, at a fixed global batch size of 128. This is the project's direct two-device strong-scaling comparison. The two-GPU final accuracy (68.82%) remained close to the single-GPU accuracy (69.31%).
 
-## 8. Performance Metrics
+### CPU versus GPU
 
-The system will measure the following performance metrics to evaluate parallel and distributed CNN training.
+The single T4 was approximately **7.13× faster** than the Windows single-process CPU baseline by measured training time. This compares **different hardware and execution environments**, so it should not be interpreted as an isolated measurement of GPU architecture efficiency.
 
-**Required Metrics**
+### Measurement scope and limitations
 
-| Metric | Formula / Measurement | Purpose |
-|---|---|---|
-| Speedup | S(N) = T₁ / Tₙ | Measures acceleration compared with single-worker training |
-| Parallel Efficiency | E(N) = S(N) / N × 100% | Measures how effectively parallel workers are utilised |
-| Communication Cost | Synchronisation / All-Reduce time per step | Measures distributed communication overhead |
-| Response Time | Wall-clock time per training epoch | Measures end-to-end epoch duration, including data loading and synchronisation |
-| Accuracy Gap | Acc₁ − Accₙ | Measures classification accuracy differences between baseline and parallel training |
+- `epoch_seconds` records the timed training loop, including training data loading and gradient communication within that loop; it **excludes** test-set evaluation, dataset download, process startup, and environment setup.
+- The timings represent **single measurements**, without repeated trials, confidence intervals, or hardware profiling.
+- CPU and GPU results were obtained on different platforms; host CPU, memory, software versions, and device properties differ.
+- CPU intra-op thread counts are not the same as an exclusive allocation of physical CPU cores.
+- DDP gradient synchronization is implemented, but **individual All-Reduce duration, communication overhead percentage, peak memory, and device utilization were not separately instrumented**; no quantitative breakdown is claimed.
+- Small differences in final accuracy may reflect training-order and floating-point differences among configurations.
 
-Where:
+## 7. Performance metrics and visualizations
 
-- **T₁:** Training time using one worker.
-- **Tₙ:** Training time using N workers.
-- **N:** Number of parallel training workers.
-- **Acc₁:** Test accuracy using one worker.
-- **Accₙ:** Test accuracy using N workers.
+| Metric | Definition |
+|---|---|
+| Epoch time | Wall-clock seconds spent in the timed training loop |
+| Total training time | Sum of the five epoch times |
+| Throughput | Total training images processed / total training time |
+| Relative speedup | Reference training time / experiment training time |
+| GPU parallel efficiency | (Single-GPU / N-GPU time) / N × 100% |
+| Test accuracy | Correct predictions / 10,000 test images × 100% |
 
-**Additional Metrics**
+The comparison data is controlled by [`results/benchmarks/experiments.csv`](results/benchmarks/experiments.csv). Run the visualization module to regenerate `benchmark_summary.csv` and figures from the five full-run CSVs.
 
-| Metric | Formula / Measurement | Purpose |
-|---|---|---|
-| Throughput | Images processed / Training time | Measures training samples processed per second |
-| Total Training Time | Wall-clock duration of the complete training run | Measures overall training cost |
-| Convergence | Test accuracy versus elapsed training time | Evaluates how quickly the model learns |
-| Communication Overhead (%) | Communication time / Training time × 100% | Estimates communication overhead as a proportion of execution time |
-| CPU / GPU Utilisation | Hardware utilisation measurements | Helps identify underutilised computing resources |
-| Memory Usage | Peak CPU RAM / GPU memory consumption | Evaluates hardware resource requirements |
+**Generated figures:**
 
-Communication and computation may overlap during DDP execution. Communication timings and overhead percentages will therefore be reported with their measurement methodology clearly identified.
+| Figure | Purpose |
+|---|---|
+| `all_epoch_time.png` | Per-epoch times across all five configurations |
+| `cpu_epoch_time.png` | CPU-only epoch time comparison |
+| `cpu_throughput.png` | CPU-only epoch throughput |
+| `cpu_speedup.png` | CPU process-configuration speedup (fixed thread budget) |
+| `cpu_vs_gpu_time.png` | Five-run total training-time comparison |
+| `cpu_vs_gpu_throughput.png` | Five-run throughput comparison |
+| `accuracy_comparison.png` | Test accuracy by epoch across five runs |
+| `gpu_speedup.png` | One-T4 versus two-T4 speedup and ideal scaling |
+| `gpu_efficiency.png` | One-T4 versus two-T4 parallel efficiency |
 
-**Planned Performance Visualisations**
+![Total training time comparison](results/figures/cpu_vs_gpu_time.png)
 
-The following graphs will be generated from measured experimental results:
+![GPU scaling speedup](results/figures/gpu_speedup.png)
 
-1. **Workers vs Training Time** — How training duration changes as worker count increases.
-2. **Workers vs Speedup** — Actual speedup compared with ideal linear speedup.
-3. **Workers vs Parallel Efficiency** — Efficiency changes as parallelism increases.
-4. **Workers vs Throughput** — Images processed per second.
-5. **Computation vs Communication Time** — Distribution of execution time across major operations.
-6. **Accuracy vs Training Time** — Model convergence across configurations.
-7. **CPU vs GPU Training Performance** — Hardware acceleration comparison.
+![GPU parallel efficiency](results/figures/gpu_efficiency.png)
 
-**Performance Evaluation Objectives**
+## 8. Installation and usage
 
-The evaluation will determine:
+### Local CPU: Windows CMD
 
-- Whether parallelism improves training performance.
-- Whether additional workers produce proportional speedup.
-- What limits system scalability.
-- Whether communication overhead outweighs computational benefits.
-- Whether model accuracy remains comparable across configurations.
-- Which configuration offers the best balance of training time, efficiency, and computing resources.
-
-The experiments will evaluate both successful speedups and performance degradation, supported by measured results and bottleneck analysis.
-
-## 9. Results and Analysis
-
-Performance results and analysis will be added after the CPU and GPU benchmark experiments are completed.
-
-## 10. Installation and Usage
-
-### Prerequisites
-- Python 3.10+ with compatible PyTorch packages
-- Git
-- Windows, Linux or macOS
-- GPU optional
-
-### Environment Setup (Windows CMD)
+**Prerequisites:** Git, a compatible Python installation, PyTorch/torchvision, and sufficient space for CIFAR-10.
 
 ```cmd
 cd /d C:\gitHub\aiml-mlsysops-parallel-cifar10
-
 python -m venv .venv
 .venv\Scripts\activate.bat
-
 python -m pip install --upgrade pip
-python -m pip install -e ".[dev]"
+python -m pip install -e .
+python -m pip install matplotlib
 ```
 
-Create the virtual environment only once.
-For later sessions, activate the existing environment.
+Use the existing virtual environment on subsequent runs; do not create it again. Check `where python` if CMD points to another project's `.venv`.
 
-### Verify PyTorch
+**Single-process CPU baseline:**
 
 ```cmd
-python -c "import torch; print(torch.__version__)"
+python -m mlsysops_cifar10.train --device cpu --epochs 5 --batch-size 128 --processes 1 --threads 4 --seed 42
 ```
 
-### Run Dataset Tests
+**CPU DDP (Gloo):**
 
 ```cmd
-python -m pytest tests/test_data.py -v
+python -m mlsysops_cifar10.train --device cpu --epochs 5 --batch-size 128 --processes 2 --threads 2 --seed 42
+python -m mlsysops_cifar10.train --device cpu --epochs 5 --batch-size 128 --processes 4 --threads 1 --seed 42
 ```
 
-### Local Verified Environment
+**Short smoke test:**
 
-- Python: 3.14.4
-- PyTorch: 2.14.1+cpu
-- Torchvision: 0.29.1+cpu
-- CPU: Intel Core i7-8665U
-- Physical cores: 4
-- Logical processors: 8
-- CIFAR-10: 50,000 training / 10,000 testing images
-- Dataset tests: 4 passed
+```cmd
+python -m mlsysops_cifar10.train --device cpu --epochs 1 --max-batches 10 --processes 1 --threads 4
+```
 
+A smoke-test CSV has fewer than five complete epochs, so do **not** add it to `experiments.csv`.
+
+### Docker: portable CPU execution
+
+Start Docker Desktop in Linux-container mode, then from the repository root:
+
+```cmd
+docker build -t mlsysops-cifar10:cpu .
+docker run --rm --cpus=2 --memory=4g -v "%cd%\data:/app/data" -v "%cd%\results:/app/results" mlsysops-cifar10:cpu
+```
+
+The image's default command runs a **one-epoch, ten-batch CPU smoke test**. The bind mounts persist downloads and results on the Windows host. The Docker test should not be mixed with the full-run benchmark manifest.
+
+### Kaggle: single-GPU and multi-GPU
+
+In a [Kaggle notebook](https://www.kaggle.com/code), select a GPU accelerator. A Kaggle **T4 ×2** session supplies two GPUs. A single-GPU command still uses only `cuda:0`.
+
+Clone and install the project **once per fresh working environment**; substitute the repository URL if using a fork:
+
+```python
+!git clone https://github.com/arshadhs/aiml-mlsysops-parallel-cifar10.git
+%cd aiml-mlsysops-parallel-cifar10
+!pip install -e . --no-deps
+```
+
+The `--no-deps` option avoids replacing Kaggle's CUDA-enabled PyTorch build. After pushing local changes to GitHub, run `!git pull --ff-only` from inside the cloned repository, provided no local files would be overwritten.
+
+**Verify accelerator:**
+
+```python
+import torch
+print(torch.cuda.is_available(), torch.cuda.device_count())
+print(torch.cuda.get_device_name(0))
+```
+
+**One GPU (CUDA):**
+
+```python
+!python -m mlsysops_cifar10.train --device cuda --processes 1 --epochs 5 --batch-size 128 --seed 42
+```
+
+**Two GPUs (DDP + NCCL):**
+
+```python
+!python -m mlsysops_cifar10.train --device cuda --processes 2 --epochs 5 --batch-size 128 --seed 42
+```
+
+First-time CIFAR-10 download may take time but is outside the training timer. Save or download each GPU CSV from `results/benchmarks/` before the Kaggle session ends.
+
+### Regenerate all graphs
+
+Ensure `experiments.csv` lists only the five completed full-run benchmarks. From the repository root:
+
+```cmd
+python -m mlsysops_cifar10.visualise
+```
+
+This regenerates [`results/benchmarks/benchmark_summary.csv`](results/benchmarks/benchmark_summary.csv) and the nine PNG figures in `results/figures/`.
+
+## 9. Software and hardware context
+
+| Environment | Details |
+|---|---|
+| Local operating system | Windows |
+| Local CPU | Intel Core i7-8665U; 4 physical cores, 8 logical processors |
+| Local Python | 3.14.4 |
+| Local PyTorch | 2.14.1+cpu |
+| Local torchvision | 0.29.1+cpu |
+| Docker | Linux image, Python 3.12, CPU-only PyTorch |
+| Kaggle GPU | NVIDIA Tesla T4 (one or two devices) |
+| Kaggle PyTorch | 2.11.0+cu128 |
+
+## 10. Reproducibility and next steps
+
+The code, full-run CSV files, `experiments.csv`, and generated figures together provide an auditable record of the five experiments. `notebooks/kaggle_gpu_training.ipynb` may also be committed after exporting it from Kaggle; the training implementation remains in `src/mlsysops_cifar10/train.py`.
+
+Possible future work includes repeated runs with variability estimates, profiling compute versus communication, monitoring RAM/VRAM utilization, and experimenting with a larger CNN or TPU. These extensions **were not needed to produce the reported results**.
 
 ## 11. References
+
+- [Krizhevsky, A. — Learning Multiple Layers of Features from Tiny Images (CIFAR-10)](https://www.cs.toronto.edu/~kriz/learning-features-2009-TR.pdf)
+- [PyTorch — DistributedDataParallel](https://docs.pytorch.org/docs/stable/generated/torch.nn.parallel.DistributedDataParallel.html)
+- [PyTorch — DistributedSampler](https://docs.pytorch.org/docs/stable/data.html#torch.utils.data.distributed.DistributedSampler)
+- [PyTorch — Distributed communication backends](https://docs.pytorch.org/docs/stable/distributed.html)
+- [Docker documentation](https://docs.docker.com/)

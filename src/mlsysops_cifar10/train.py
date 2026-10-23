@@ -23,6 +23,7 @@ import torch.multiprocessing as mp
 from torch import nn
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
+from torch.profiler import profile, ProfilerActivity
 
 from mlsysops_cifar10.data import (
     load_cifar10,
@@ -279,6 +280,7 @@ def train_worker(rank, world_size, port, args):
         store=store,
         rank=rank,
         world_size=world_size,
+        device_id=device if device.type == "cuda" else None,
     )
 
     try:
@@ -297,7 +299,7 @@ def train_worker(rank, world_size, port, args):
         dist.barrier()
 
         print(
-            f"Rank {rank} | Passed Gloo barrier",
+            f"Rank {rank} | Passed {backend} barrier",
             flush=True,
         )
 
@@ -388,15 +390,60 @@ def train_worker(rank, world_size, port, args):
             # coordinating non-overlapping samples across ranks.
             train_sampler.set_epoch(epoch - 1)
 
-            metrics = train_one_epoch(
-                model=ddp_model,
-                loader=train_loader,
-                optimizer=optimizer,
-                criterion=criterion,
-                max_batches=args.max_batches,
-                distributed=True,
-                device=device,
-            )
+
+            # Profile a short distributed run without changing the model
+            # or gradient synchronization behavior.
+            if args.profile_communication and device.type == "cuda":
+
+                with profile(
+                    activities=[
+                        ProfilerActivity.CPU,
+                        ProfilerActivity.CUDA,
+                    ],
+                ) as prof:
+
+                    metrics = train_one_epoch(
+                        model=ddp_model,
+                        loader=train_loader,
+                        optimizer=optimizer,
+                        criterion=criterion,
+                        max_batches=args.max_batches,
+                        distributed=True,
+                        device=device,
+                    )
+
+                # Store a Chrome/Perfetto-compatible execution trace
+                # for each GPU worker independently.
+                profile_dir = Path("results/profiles")
+                profile_dir.mkdir(parents=True, exist_ok=True)
+
+                trace_file = profile_dir / f"gpu_rank{rank}_trace.json"
+                prof.export_chrome_trace(str(trace_file))
+
+                # Rank 0 prints the operation-level timing summary.
+                if rank == 0:
+                    print("\nGPU and NCCL Profiling Results")
+                    print(
+                        prof.key_averages().table(
+                            sort_by="self_cuda_time_total",
+                            row_limit=30,
+                        ),
+                        flush=True,
+                    )
+                    print(f"Trace saved: {trace_file}")
+
+            else:
+                # Normal training without profiler instrumentation.
+                metrics = train_one_epoch(
+                    model=ddp_model,
+                    loader=train_loader,
+                    optimizer=optimizer,
+                    criterion=criterion,
+                    max_batches=args.max_batches,
+                    distributed=True,
+                    device=device,
+                )
+
 
             if rank == 0:
                 # Evaluate the underlying CNN on Rank 0 only.
@@ -430,7 +477,7 @@ def train_worker(rank, world_size, port, args):
         if rank == 0:
             save_results(
                 results,
-                device_name="cpu",
+                device_name=device.type,
                 processes=world_size,
             )
 
@@ -454,6 +501,13 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--processes", type=int, default=1)
 
+    # Enable profiling of CPU operations and CUDA kernels.
+    parser.add_argument(
+        "--profile-communication",
+        action="store_true",
+        help="Profile GPU operations and NCCL gradient communication",
+    )
+    
     # Device choice: CPU, NVIDIA CUDA GPU, or automatic selection.
     parser.add_argument(
         "--device",
