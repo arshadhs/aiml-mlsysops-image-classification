@@ -122,6 +122,7 @@ def train_one_epoch(
         stats = torch.tensor(
             [total_loss, float(total_images)],
             dtype=torch.float64,
+            device=device,
         )
 
         dist.all_reduce(stats, op=dist.ReduceOp.SUM)
@@ -130,6 +131,7 @@ def train_one_epoch(
         elapsed_tensor = torch.tensor(
             [elapsed],
             dtype=torch.float64,
+            device=device,
         )
 
         dist.all_reduce(
@@ -248,7 +250,18 @@ def train_worker(rank, world_size, port, args):
     # Limit CPU computation threads available to each process.
     torch.set_num_threads(args.threads)
 
-    device = torch.device("cpu")
+    # Assign each distributed process to its own GPU when CUDA is selected.
+    use_cuda = args.device == "cuda" or (
+        args.device == "auto" and torch.cuda.is_available()
+    )
+
+    if use_cuda:
+        torch.cuda.set_device(rank)
+        device = torch.device(f"cuda:{rank}")
+        backend = "nccl"
+    else:
+        device = torch.device("cpu")
+        backend = "gloo"
 
     # Use TCPStore without libuv for Windows compatibility.
     store = dist.TCPStore(
@@ -259,9 +272,10 @@ def train_worker(rank, world_size, port, args):
         use_libuv=False,
     )
 
-    # Initialize the Gloo communication group.
+    # Initialize the communication group.
+    # Gloo on Windows CPU and uses NCCL for distributed CUDA training
     dist.init_process_group(
-        backend="gloo",
+        backend=backend,
         store=store,
         rank=rank,
         world_size=world_size,
@@ -273,7 +287,9 @@ def train_worker(rank, world_size, port, args):
             f"PID {os.getpid()} | "
             f"World size {world_size} | "
             f"Threads {torch.get_num_threads()} | "
-            f"Gloo initialized: {dist.is_initialized()}",
+            f"Backend: {backend} | "
+            f"Device: {device} | "
+            f"DDP initialized: {dist.is_initialized()}"
             flush=True,
         )
 
@@ -322,11 +338,19 @@ def train_worker(rank, world_size, port, args):
             flush=True,
         )
 
-        # Construct a complete CNN replica on this CPU process.
+        # Put the complete CNN replica on this worker's device.
         model = CIFAR10CNN().to(device)
 
-        # DDP synchronizes gradients during backward propagation.
-        ddp_model = DDP(model)
+        if device.type == "cuda":
+            # Each CUDA process controls exactly one GPU.
+            ddp_model = DDP(
+                model,
+                device_ids=[rank],
+                output_device=rank,
+            )
+        else:
+            # Preserve existing CPU DDP behavior.
+            ddp_model = DDP(model)
 
         # Count all trainable weights and biases in the CNN.
         parameter_count = sum(
@@ -474,12 +498,18 @@ def main():
     else:
         device = torch.device("cpu")
 
-    # Our current DDP implementation uses CPU workers and Gloo.
-    # Multi-GPU training would require a CUDA/NCCL DDP path.
+    # DDP implementation uses CPU workers and Gloo.
+    # Multi-GPU training require a CUDA/NCCL DDP path.
+    
+    # One distributed worker must be assigned to each GPU.
     if args.processes > 1 and device.type == "cuda":
-        parser.error(
-            "CUDA currently supports --processes 1 only"
-        )
+        if not dist.is_nccl_available():
+            parser.error("NCCL is not available in this PyTorch build")
+
+        if args.processes > torch.cuda.device_count():
+            parser.error(
+                "Requested more CUDA processes than available GPUs"
+            )
 
     # Launch multiple processes only for CPU DDP.
     if args.processes > 1:

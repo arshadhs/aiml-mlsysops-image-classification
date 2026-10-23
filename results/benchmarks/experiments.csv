@@ -2,3 +2,4 @@ configuration,platform,device,processes,threads,file
 CPU 1x4,Windows,CPU,1,4,cpu_baseline_20261021_222856.csv
 DDP 2x2,Windows,CPU,2,2,cpu_ddp_2processes_20261022_224405.csv
 DDP 4x1,Windows,CPU,4,1,cpu_ddp_4processes_20261023_171311.csv
+Kaggle T4 1 GPU,Kaggle,CUDA,1,4,cuda_baseline_20261023_214743.csv
