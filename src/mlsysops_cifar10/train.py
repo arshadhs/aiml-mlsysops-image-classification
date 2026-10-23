@@ -1,29 +1,34 @@
-# Training loop, optimisation and checkpoint saving
 
-"""CPU training for CIFAR-10 using single-process or PyTorch DDP."""
+"""Train CIFAR-10 using CPU, CPU DDP, or a single CUDA GPU.
+
+Supported configurations:
+    - Single-process CPU training
+    - Multi-process CPU training with PyTorch DDP and Gloo
+    - Single-GPU training with CUDA
+
+Training metrics are saved as timestamped CSV files.
+"""
 
 import argparse
 import csv
-import time
-from pathlib import Path
-
 import os
 import socket
+import time
+from datetime import datetime
+from pathlib import Path
 
 import torch
-import torch.multiprocessing as mp
 import torch.distributed as dist
+import torch.multiprocessing as mp
 from torch import nn
-from torch.utils.data import DataLoader
 from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data import DataLoader
 
-from datetime import datetime
-
-from mlsysops_cifar10.model import CIFAR10CNN
 from mlsysops_cifar10.data import (
     load_cifar10,
     create_distributed_train_loader,
 )
+from mlsysops_cifar10.model import CIFAR10CNN
 
 
 def train_one_epoch(
@@ -33,58 +38,87 @@ def train_one_epoch(
     criterion,
     max_batches=None,
     distributed=False,
+    device=None,
 ):
-    """Train one epoch and calculate performance metrics.
+    """Train the CNN for one epoch and measure its performance.
 
     Args:
         model: CNN or DDP-wrapped CNN.
-        loader: Training DataLoader for this process.
-        optimizer: Updates model weights.
-        criterion: Calculates classification loss.
-        max_batches: Optional limit for quick tests.
-        distributed: Whether gradients are synchronized using DDP.
+        loader: DataLoader providing training images and labels.
+        optimizer: Optimizer responsible for updating model weights.
+        criterion: Loss function used to compare predictions and labels.
+        max_batches: Optional batch limit for smoke testing.
+        distributed: Whether CPU DDP is enabled.
+        device: CPU or CUDA device used for computation.
 
     Returns:
-        Dictionary containing training loss, elapsed time,
-        throughput, and total images processed.
+        Dictionary containing average loss, training time,
+        throughput, and number of images processed.
     """
     model.train()
 
-    # Track the weighted loss and number of processed images.
+    # Determine the device from the model if not specified.
+    if device is None:
+        device = next(model.parameters()).device
+
+    # Accumulate image-weighted loss and processed image count.
     total_loss = 0.0
     total_images = 0
 
-    # Synchronize epoch timing across DDP workers.
+    # Start distributed workers from a common synchronization point.
     if distributed:
         dist.barrier()
+
+    # GPU operations are asynchronous.
+    # Wait for pending CUDA work before starting the timer.
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
 
     start = time.perf_counter()
 
     for batch_index, (images, labels) in enumerate(loader):
+
+        # Allow short experiments without processing the full dataset.
         if max_batches is not None and batch_index >= max_batches:
             break
 
+        # Move training data onto the same device as the CNN.
+        images = images.to(device)
+        labels = labels.to(device)
+
+        # Clear gradients from the previous training step.
         optimizer.zero_grad()
 
+        # Forward pass: calculate class predictions.
         outputs = model(images)
+
+        # Calculate cross-entropy classification loss.
         loss = criterion(outputs, labels)
 
-        # DDP automatically synchronizes gradients during backward().
+        # Backward pass: calculate gradients.
+        # With DDP, gradients are synchronized automatically.
         loss.backward()
+
+        # Update the CNN parameters using the calculated gradients.
         optimizer.step()
 
+        # Record loss weighted by the current batch size.
         batch_size = images.size(0)
         total_loss += loss.item() * batch_size
         total_images += batch_size
 
-    # Ensure all workers finish before measuring epoch duration.
+    # Ensure all CUDA operations have completed.
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+
+    # Wait until all distributed workers finish training.
     if distributed:
         dist.barrier()
 
     elapsed = time.perf_counter() - start
 
     if distributed:
-        # Combine image counts and weighted loss from every rank.
+        # Combine image counts and weighted loss across all ranks.
         stats = torch.tensor(
             [total_loss, float(total_images)],
             dtype=torch.float64,
@@ -92,17 +126,22 @@ def train_one_epoch(
 
         dist.all_reduce(stats, op=dist.ReduceOp.SUM)
 
-        # Use the slowest worker's time for distributed performance.
+        # Distributed epoch time is determined by the slowest rank.
         elapsed_tensor = torch.tensor(
             [elapsed],
             dtype=torch.float64,
         )
-        dist.all_reduce(elapsed_tensor, op=dist.ReduceOp.MAX)
+
+        dist.all_reduce(
+            elapsed_tensor,
+            op=dist.ReduceOp.MAX,
+        )
 
         total_loss = stats[0].item()
         total_images = int(stats[1].item())
         elapsed = elapsed_tensor.item()
 
+    # All configurations return the same metric structure.
     return {
         "train_loss": total_loss / total_images,
         "epoch_seconds": elapsed,
@@ -112,14 +151,33 @@ def train_one_epoch(
 
 
 @torch.no_grad()
-def evaluate(model, loader):
-    """Calculate classification accuracy on the test set."""
+def evaluate(model, loader, device=None):
+    """Evaluate classification accuracy on the CIFAR-10 test set.
+
+    Args:
+        model: Trained CNN.
+        loader: Test DataLoader containing images and labels.
+        device: CPU or CUDA device used by the model.
+
+    Returns:
+        Classification accuracy as a percentage.
+    """
     model.eval()
+
+    # Use the model's device when none is specified.
+    if device is None:
+        device = next(model.parameters()).device
 
     correct = 0
     total = 0
 
     for images, labels in loader:
+
+        # Move test data onto the model's computing device.
+        images = images.to(device)
+        labels = labels.to(device)
+
+        # Predict the class with the highest output score.
         outputs = model(images)
         predictions = outputs.argmax(dim=1)
 
@@ -130,26 +188,69 @@ def evaluate(model, loader):
 
 
 def find_free_port():
-    """Find an available TCP port for distributed communication."""
+    """Find an available local TCP port for distributed workers."""
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         return sock.getsockname()[1]
 
 
-def train_worker(rank, world_size, port, args):
-    """Run distributed CNN training in one CPU process.
+def save_results(results, device_name, processes):
+    """Save aggregated experiment metrics to a timestamped CSV.
 
     Args:
-        rank: Unique process identifier, starting from zero.
-        world_size: Total number of distributed processes.
-        port: TCP port used for Gloo process coordination.
-        args: Command-line training configuration.
-    """
+        results: List of per-epoch metric dictionaries.
+        device_name: Device identifier, such as cpu or cuda.
+        processes: Number of participating training processes.
 
+    Returns:
+        Path of the generated CSV file.
+    """
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    # Preserve existing CPU and DDP filename conventions.
+    if processes > 1:
+        filename = (
+            f"{device_name}_ddp_{processes}processes_{timestamp}.csv"
+        )
+    else:
+        filename = f"{device_name}_baseline_{timestamp}.csv"
+
+    output = Path("results/benchmarks") / filename
+    output.parent.mkdir(parents=True, exist_ok=True)
+
+    with output.open("w", newline="") as file:
+        writer = csv.DictWriter(
+            file,
+            fieldnames=results[0].keys(),
+        )
+
+        writer.writeheader()
+        writer.writerows(results)
+
+    print(f"Results saved to: {output}", flush=True)
+    return output
+
+
+def train_worker(rank, world_size, port, args):
+    """Run one CPU distributed training process.
+
+    Args:
+        rank: Unique worker identifier, starting from zero.
+        world_size: Total number of distributed processes.
+        port: TCP port used to coordinate the workers.
+        args: Command-line training configuration.
+
+    Each process trains a complete CNN replica on a different
+    subset of CIFAR-10 images.
+    """
     torch.manual_seed(args.seed)
+
+    # Limit CPU computation threads available to each process.
     torch.set_num_threads(args.threads)
 
-    # Create TCPStore without libuv (Windows compatibility).
+    device = torch.device("cpu")
+
+    # Use TCPStore without libuv for Windows compatibility.
     store = dist.TCPStore(
         host_name="127.0.0.1",
         port=port,
@@ -158,6 +259,7 @@ def train_worker(rank, world_size, port, args):
         use_libuv=False,
     )
 
+    # Initialize the Gloo communication group.
     dist.init_process_group(
         backend="gloo",
         store=store,
@@ -175,8 +277,7 @@ def train_worker(rank, world_size, port, args):
             flush=True,
         )
 
-        # Verify synchronization across all workers.
-        # is a synchronization point. Every process must reach the barrier before any of them can continue past it.
+        # Ensure every rank has joined the process group.
         dist.barrier()
 
         print(
@@ -184,11 +285,10 @@ def train_worker(rank, world_size, port, args):
             flush=True,
         )
 
-        # Load CIFAR-10 using the same preprocessing as the baseline.
+        # Load CIFAR-10 using the same preprocessing as CPU baseline.
         train_dataset, test_dataset = load_cifar10()
 
-        # Only Rank 0 performs model evaluation.
-        # Other ranks don't require a test DataLoader.
+        # Rank 0 alone evaluates test accuracy.
         test_loader = None
 
         if rank == 0:
@@ -199,18 +299,20 @@ def train_worker(rank, world_size, port, args):
                 num_workers=0,
             )
 
-        # Partition the 50,000 training images across all ranks.
-        train_loader, train_sampler = create_distributed_train_loader(
-            train_dataset=train_dataset,
-            rank=rank,
-            world_size=world_size,
-            global_batch_size=args.batch_size,
+        # Partition CIFAR-10 across distributed workers.
+        train_loader, train_sampler = (
+            create_distributed_train_loader(
+                train_dataset=train_dataset,
+                rank=rank,
+                world_size=world_size,
+                global_batch_size=args.batch_size,
+            )
         )
 
-        # Each worker receives an equal share of the dataset.
+        # Images assigned to this worker for each epoch.
         local_images = len(train_sampler)
 
-        # The local batch size is global batch size / world size.
+        # Images processed by this worker per training step.
         local_batch_size = train_loader.batch_size
 
         print(
@@ -220,23 +322,20 @@ def train_worker(rank, world_size, port, args):
             flush=True,
         )
 
-        # Create an identical CNN architecture in each worker.
-        # DDP synchronizes initial parameters from Rank 0.
-        model = CIFAR10CNN()
+        # Construct a complete CNN replica on this CPU process.
+        model = CIFAR10CNN().to(device)
 
-        # Wrap the model with DistributedDataParallel.
-        # During backward(), DDP synchronizes gradients via Gloo.
+        # DDP synchronizes gradients during backward propagation.
         ddp_model = DDP(model)
 
-        # Number of trainable parameters in our CNN.
+        # Count all trainable weights and biases in the CNN.
         parameter_count = sum(
             parameter.numel()
             for parameter in ddp_model.parameters()
             if parameter.requires_grad
         )
 
-        # Check that workers start with identical model weights.
-        # We use the first trainable parameter as a simple checksum.
+        # Initial parameter checksum for a basic consistency check.
         first_parameter = next(ddp_model.parameters())
         parameter_sum = first_parameter.detach().sum().item()
 
@@ -248,8 +347,7 @@ def train_worker(rank, world_size, port, args):
             flush=True,
         )
 
-
-        # Use the same loss function and optimizer as our baseline.
+        # Match the baseline optimizer and learning rate.
         criterion = nn.CrossEntropyLoss()
 
         optimizer = torch.optim.Adam(
@@ -257,12 +355,13 @@ def train_worker(rank, world_size, port, args):
             lr=args.lr,
         )
 
-        # Rank 0 collects the aggregated metrics for CSV reporting.
+        # Rank 0 stores aggregated results for the CSV.
         results = []
 
-
-        # Train the CNN for the configured number of epochs.
         for epoch in range(1, args.epochs + 1):
+
+            # Change the shuffle order between epochs while
+            # coordinating non-overlapping samples across ranks.
             train_sampler.set_epoch(epoch - 1)
 
             metrics = train_one_epoch(
@@ -272,11 +371,16 @@ def train_worker(rank, world_size, port, args):
                 criterion=criterion,
                 max_batches=args.max_batches,
                 distributed=True,
+                device=device,
             )
 
             if rank == 0:
-                # Only Rank 0 evaluates and collects results.
-                accuracy = evaluate(ddp_model.module, test_loader)
+                # Evaluate the underlying CNN on Rank 0 only.
+                accuracy = evaluate(
+                    ddp_model.module,
+                    test_loader,
+                    device=device,
+                )
 
                 metrics["epoch"] = epoch
                 metrics["test_accuracy"] = accuracy
@@ -295,40 +399,27 @@ def train_worker(rank, world_size, port, args):
                     flush=True,
                 )
 
-            # Wait until Rank 0 finishes evaluation.
-            # All ranks must enter the next epoch together.
+            # Wait for Rank 0 to complete evaluation.
             dist.barrier()
 
-        # IMPORTANT: This block is OUTSIDE the epoch loop.
-        # Save all epoch results into one CSV file per run.
+        # Write all five epochs to one CSV, on Rank 0 only.
         if rank == 0:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-            output = Path(
-                f"results/benchmarks/"
-                f"cpu_ddp_{world_size}processes_{timestamp}.csv"
+            save_results(
+                results,
+                device_name="cpu",
+                processes=world_size,
             )
 
-            output.parent.mkdir(parents=True, exist_ok=True)
-
-            with output.open("w", newline="") as file:
-                writer = csv.DictWriter(
-                    file,
-                    fieldnames=results[0].keys(),
-                )
-                writer.writeheader()
-                writer.writerows(results)
-
-            print(f"Results saved to: {output}", flush=True)
-
-        # Ensure all workers have finished before cleanup.
+        # Prevent other ranks from exiting before result saving.
         dist.barrier()
 
     finally:
+        # Release Gloo communication resources.
         dist.destroy_process_group()
 
 
 def main():
+    """Parse arguments and select single-process or DDP training."""
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--epochs", type=int, default=5)
@@ -338,13 +429,62 @@ def main():
     parser.add_argument("--max-batches", type=int, default=None)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--processes", type=int, default=1)
-    
+
+    # Device choice: CPU, NVIDIA CUDA GPU, or automatic selection.
+    parser.add_argument(
+        "--device",
+        choices=("cpu", "cuda", "auto"),
+        default="cpu",
+    )
+
     args = parser.parse_args()
 
+    # Validate experiment parameters before running.
     if args.processes not in (1, 2, 4):
         parser.error("--processes must be 1, 2, or 4")
 
+    if args.epochs < 1:
+        parser.error("--epochs must be at least 1")
+
+    if args.batch_size < 1:
+        parser.error("--batch-size must be positive")
+
+    if args.threads < 1:
+        parser.error("--threads must be positive")
+
+    if args.max_batches is not None and args.max_batches < 1:
+        parser.error("--max-batches must be positive")
+
+    if args.batch_size % args.processes != 0:
+        parser.error("--batch-size must be divisible by --processes")
+
+    # Resolve the computing device.
+    if args.device == "cuda":
+        if not torch.cuda.is_available():
+            parser.error(
+                "CUDA requested, but no CUDA GPU is available"
+            )
+        device = torch.device("cuda")
+
+    elif args.device == "auto":
+        device = torch.device(
+            "cuda" if torch.cuda.is_available() else "cpu"
+        )
+
+    else:
+        device = torch.device("cpu")
+
+    # Our current DDP implementation uses CPU workers and Gloo.
+    # Multi-GPU training would require a CUDA/NCCL DDP path.
+    if args.processes > 1 and device.type == "cuda":
+        parser.error(
+            "CUDA currently supports --processes 1 only"
+        )
+
+    # Launch multiple processes only for CPU DDP.
     if args.processes > 1:
+
+        # All workers must connect through the same TCP port.
         port = find_free_port()
 
         mp.spawn(
@@ -353,16 +493,20 @@ def main():
             nprocs=args.processes,
             join=True,
         )
-        
+
         return
-        
-    # Reproducibility and CPU configuration
+
+    # Single-process CPU or CUDA training.
     torch.manual_seed(args.seed)
     torch.set_num_threads(args.threads)
 
-    print("Device: CPU")
+    print(f"Device: {device}")
     print(f"PyTorch threads: {torch.get_num_threads()}")
 
+    if device.type == "cuda":
+        print(f"GPU: {torch.cuda.get_device_name(device)}")
+
+    # Load the same CIFAR-10 dataset on either device.
     train_dataset, test_dataset = load_cifar10()
 
     train_loader = DataLoader(
@@ -379,25 +523,45 @@ def main():
         num_workers=0,
     )
 
-    model = CIFAR10CNN()
+    # Move model parameters to the selected device.
+    model = CIFAR10CNN().to(device)
+
     criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+
+    optimizer = torch.optim.Adam(
+        model.parameters(),
+        lr=args.lr,
+    )
 
     results = []
 
     for epoch in range(1, args.epochs + 1):
+
         metrics = train_one_epoch(
-            model,
-            train_loader,
-            optimizer,
-            criterion,
+            model=model,
+            loader=train_loader,
+            optimizer=optimizer,
+            criterion=criterion,
             max_batches=args.max_batches,
+            distributed=False,
+            device=device,
         )
 
-        accuracy = evaluate(model, test_loader)
+        # Evaluate on the same device used for training.
+        accuracy = evaluate(
+            model,
+            test_loader,
+            device=device,
+        )
 
+        # Store common metrics for CPU/GPU visualizations.
         metrics["epoch"] = epoch
         metrics["test_accuracy"] = accuracy
+        metrics["device"] = device.type
+        metrics["processes"] = 1
+        metrics["threads_per_process"] = args.threads
+        metrics["global_batch_size"] = args.batch_size
+
         results.append(metrics)
 
         print(
@@ -405,19 +569,16 @@ def main():
             f"Loss: {metrics['train_loss']:.4f} | "
             f"Time: {metrics['epoch_seconds']:.2f}s | "
             f"Throughput: {metrics['throughput']:.1f} images/s | "
-            f"Accuracy: {accuracy:.2f}%"
+            f"Accuracy: {accuracy:.2f}%",
+            flush=True,
         )
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output = Path(f"results/benchmarks/cpu_baseline_{timestamp}.csv")   
-    output.parent.mkdir(parents=True, exist_ok=True)
-
-    with output.open("w", newline="") as file:
-        writer = csv.DictWriter(file, fieldnames=results[0].keys())
-        writer.writeheader()
-        writer.writerows(results)
-
-    print(f"Results saved to: {output}")
+    # Save results from the single-process experiment.
+    save_results(
+        results,
+        device_name=device.type,
+        processes=1,
+    )
 
 
 if __name__ == "__main__":
