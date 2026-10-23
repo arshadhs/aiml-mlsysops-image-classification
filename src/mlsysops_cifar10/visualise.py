@@ -1,84 +1,155 @@
-"""Generate benchmark comparisons for CIFAR-10 CPU training."""
 
-import argparse
+"""Compare CIFAR-10 CPU and GPU training benchmarks.
+
+Reads experiments.csv and generates reproducible result figures.
+Run from the repository root:
+    python -m mlsysops_cifar10.visualise
+"""
+
 import csv
 from pathlib import Path
+
+import matplotlib
+
+# Save figures without needing an interactive display.
+matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
 
 
-# Benchmark directory containing the five-epoch CSV files.
+# Paths are relative to the repository root.
 BENCHMARK_DIR = Path("results/benchmarks")
 FIGURE_DIR = Path("results/figures")
-
-# Each configuration's recorded experiment, thread layout and label.
-EXPERIMENTS = {
-    "CPU 1x4": (
-        "cpu_baseline_20261021_222856.csv",
-        1,
-        4,
-    ),
-    "DDP 2x2": (
-        "cpu_ddp_2processes_20261022_224405.csv",
-        2,
-        2,
-    ),
-    "DDP 4x1": (
-        "cpu_ddp_4processes_20261023_171311.csv",
-        4,
-        1,
-    ),
-}
+MANIFEST = BENCHMARK_DIR / "experiments.csv"
 
 
-def read_experiment(filename):
-    """Read five epochs of measurements from one benchmark CSV.
+def read_benchmark(filename):
+    """Read and validate one five-epoch training benchmark.
 
     Args:
-        filename: CSV filename within BENCHMARK_DIR.
+        filename: CSV filename from the experiment manifest.
 
     Returns:
-        List of dictionaries containing numeric epoch metrics.
+        List of dictionaries with numeric training metrics.
     """
     path = BENCHMARK_DIR / filename
 
-    with path.open(newline="") as file:
-        rows = list(csv.DictReader(file))
+    with path.open(newline="", encoding="utf-8-sig") as file:
+        records = list(csv.DictReader(file))
 
-    if len(rows) != 5:
-        raise ValueError(
-            f"{path}: expected 5 epochs, found {len(rows)}"
-        )
+    if len(records) != 5:
+        raise ValueError(f"{path}: expected 5 epochs")
 
-    # Convert stored CSV strings into numerical values.
-    metrics = []
-    for row in rows:
-        metrics.append({
-            "epoch": int(row["epoch"]),
-            "seconds": float(row["epoch_seconds"]),
-            "throughput": float(row["throughput"]),
-            "accuracy": float(row["test_accuracy"]),
-            "loss": float(row["train_loss"]),
-            "images": int(row["images_processed"]),
+    rows = []
+
+    for record in records:
+        rows.append({
+            "epoch": int(record["epoch"]),
+            "train_loss": float(record["train_loss"]),
+            "epoch_seconds": float(record["epoch_seconds"]),
+            "throughput": float(record["throughput"]),
+            "test_accuracy": float(record["test_accuracy"]),
+            "images_processed": int(record["images_processed"]),
         })
 
-    if [r["epoch"] for r in metrics] != [1, 2, 3, 4, 5]:
+    if [row["epoch"] for row in rows] != list(range(1, 6)):
         raise ValueError(f"{path}: invalid epoch sequence")
 
-    if any(r["images"] != 50000 for r in metrics):
+    if any(row["images_processed"] != 50000 for row in rows):
         raise ValueError(f"{path}: incomplete training epoch")
 
-    return metrics
+    return rows
 
 
-def save_line_chart(data, field, ylabel, filename):
-    """Plot one metric against epoch for all configurations."""
+def load_experiments():
+    """Load experiment metadata and corresponding benchmark rows."""
+    with MANIFEST.open(newline="", encoding="utf-8-sig") as file:
+        manifest_rows = list(csv.DictReader(file))
+
+    experiments = []
+
+    for record in manifest_rows:
+        # Each manifest row describes a single completed training run.
+        experiments.append({
+            "configuration": record["configuration"],
+            "platform": record["platform"],
+            "device": record["device"].upper(),
+            "processes": int(record["processes"]),
+            "threads": int(record["threads"] or 0),
+            "file": record["file"],
+            "epochs": read_benchmark(record["file"]),
+        })
+
+    if not experiments:
+        raise ValueError("No experiments found")
+
+    return experiments
+
+
+def create_summary(experiments):
+    """Calculate total training time, throughput and final accuracy."""
+    summary = []
+
+    # Identify the reference CPU experiment for speedup calculations.
+    baselines = [
+        exp for exp in experiments
+        if exp["device"] == "CPU" and exp["processes"] == 1
+    ]
+
+    if len(baselines) != 1:
+        raise ValueError("Exactly one single-process CPU baseline is required")
+
+    baseline_time = sum(
+        row["epoch_seconds"] for row in baselines[0]["epochs"]
+    )
+
+    for exp in experiments:
+        # Sum training-only epoch timings across the complete run.
+        total_seconds = sum(
+            row["epoch_seconds"] for row in exp["epochs"]
+        )
+
+        total_images = sum(
+            row["images_processed"] for row in exp["epochs"]
+        )
+
+        # Only CPU configurations receive CPU-relative speedup.
+        speedup = (
+            baseline_time / total_seconds
+            if exp["device"] == "CPU"
+            else None
+        )
+
+        summary.append({
+            "configuration": exp["configuration"],
+            "platform": exp["platform"],
+            "device": exp["device"],
+            "processes": exp["processes"],
+            "threads_per_process": exp["threads"],
+            "training_seconds": round(total_seconds, 2),
+            "throughput": round(total_images / total_seconds, 2),
+            "cpu_speedup": (
+                round(speedup, 3) if speedup is not None else ""
+            ),
+            "final_accuracy": exp["epochs"][-1]["test_accuracy"],
+        })
+
+    return summary
+
+
+def line_chart(experiments, field, ylabel, filename):
+    """Plot an epoch-level metric for selected experiments."""
     plt.figure(figsize=(8, 5))
 
-    for name, rows in data.items():
-        epochs = [row["epoch"] for row in rows]
-        values = [row[field] for row in rows]
-        plt.plot(epochs, values, marker="o", label=name)
+    for exp in experiments:
+        epochs = exp["epochs"]
+
+        plt.plot(
+            [row["epoch"] for row in epochs],
+            [row[field] for row in epochs],
+            marker="o",
+            label=exp["configuration"],
+        )
 
     plt.xlabel("Epoch")
     plt.ylabel(ylabel)
@@ -90,69 +161,36 @@ def save_line_chart(data, field, ylabel, filename):
     plt.close()
 
 
-def save_speedup_chart(summary):
-    """Compare observed training-loop speedup against baseline."""
-    plt.figure(figsize=(8, 5))
-
+def bar_chart(summary, field, ylabel, filename):
+    """Create a comparison bar chart from summary measurements."""
     labels = [row["configuration"] for row in summary]
-    speedups = [row["speedup"] for row in summary]
+    values = [float(row[field]) for row in summary]
 
-    bars = plt.bar(labels, speedups)
+    plt.figure(figsize=(8, 5))
+    bars = plt.bar(labels, values)
 
-    for bar, value in zip(bars, speedups):
+    # Put the measured value above each bar.
+    for bar, value in zip(bars, values):
         plt.text(
             bar.get_x() + bar.get_width() / 2,
-            bar.get_height() + 0.02,
-            f"{value:.2f}x",
+            bar.get_height(),
+            f"{value:.2f}",
             ha="center",
+            va="bottom",
         )
 
-    plt.ylabel("Observed speedup vs CPU 1x4")
-    plt.ylim(0, max(speedups) * 1.20)
+    plt.ylabel(ylabel)
+    plt.ylim(0, max(values) * 1.18)
     plt.tight_layout()
-    plt.savefig(FIGURE_DIR / "speedup.png", dpi=180)
+    plt.savefig(FIGURE_DIR / filename, dpi=180)
     plt.close()
 
 
-def main():
-    """Load experiment CSVs and create summary and figures."""
-    parser = argparse.ArgumentParser()
-    parser.parse_args()
-
-    FIGURE_DIR.mkdir(parents=True, exist_ok=True)
-
-    # Load the baseline and both DDP configurations.
-    data = {
-        name: read_experiment(filename)
-        for name, (filename, _, _) in EXPERIMENTS.items()
-    }
-
-    # Total training time excludes evaluation and process startup.
-    baseline_seconds = sum(
-        row["seconds"] for row in data["CPU 1x4"]
-    )
-
-    summary = []
-
-    for name, (_, processes, threads) in EXPERIMENTS.items():
-        rows = data[name]
-        seconds = sum(row["seconds"] for row in rows)
-        images = sum(row["images"] for row in rows)
-
-        summary.append({
-            "configuration": name,
-            "processes": processes,
-            "threads_per_process": threads,
-            "training_seconds": round(seconds, 2),
-            "throughput": round(images / seconds, 2),
-            "speedup": round(baseline_seconds / seconds, 3),
-            "final_accuracy": rows[-1]["accuracy"],
-        })
-
-    # Save a machine-readable comparison for the assignment.
+def save_summary(summary):
+    """Write one summary CSV for the assignment and README."""
     output = BENCHMARK_DIR / "benchmark_summary.csv"
 
-    with output.open("w", newline="") as file:
+    with output.open("w", newline="", encoding="utf-8") as file:
         writer = csv.DictWriter(
             file,
             fieldnames=summary[0].keys(),
@@ -160,35 +198,77 @@ def main():
         writer.writeheader()
         writer.writerows(summary)
 
-    # Create the four figures used in the final report.
-    save_line_chart(
-        data, "seconds", "Training time (seconds)",
-        "epoch_time.png",
-    )
-    save_line_chart(
-        data, "throughput", "Images per second",
-        "throughput.png",
-    )
-    save_line_chart(
-        data, "accuracy", "Test accuracy (%)",
-        "accuracy.png",
-    )
-    save_speedup_chart(summary)
+    return output
 
-    print("\nCIFAR-10 CPU benchmark comparison")
-    print("-" * 75)
+
+def main():
+    """Generate CPU scaling and cross-platform performance figures."""
+    FIGURE_DIR.mkdir(parents=True, exist_ok=True)
+
+    experiments = load_experiments()
+    summary = create_summary(experiments)
+
+    # Restrict parallel-scaling comparisons to the same CPU machine.
+    cpu_experiments = [
+        exp for exp in experiments
+        if exp["device"] == "CPU" and exp["platform"] == "Windows"
+    ]
+
+    cpu_summary = [
+        row for row in summary
+        if row["device"] == "CPU" and row["platform"] == "Windows"
+    ]
+
+    if cpu_experiments:
+        line_chart(
+            cpu_experiments, "epoch_seconds",
+            "Training time (seconds)", "cpu_epoch_time.png",
+        )
+        line_chart(
+            cpu_experiments, "throughput",
+            "Images per second", "cpu_throughput.png",
+        )
+        bar_chart(
+            cpu_summary, "cpu_speedup",
+            "Observed speedup vs CPU 1x4", "cpu_speedup.png",
+        )
+
+    # Accuracy comparison can include both CPU and future GPU runs.
+    line_chart(
+        experiments, "test_accuracy",
+        "Test accuracy (%)", "accuracy_comparison.png",
+    )
+
+    # Create hardware comparisons only when GPU results are available.
+    if any(exp["device"] == "CUDA" for exp in experiments):
+        bar_chart(
+            summary, "training_seconds",
+            "Training time (seconds)", "cpu_vs_gpu_time.png",
+        )
+        bar_chart(
+            summary, "throughput",
+            "Images per second", "cpu_vs_gpu_throughput.png",
+        )
+
+    output = save_summary(summary)
+
+    print("\nCIFAR-10 Benchmark Summary")
+    print("-" * 83)
 
     for row in summary:
+        speedup = row["cpu_speedup"]
+        speedup_text = f"{speedup:.2f}x" if speedup != "" else "N/A"
+
         print(
-            f"{row['configuration']:10} | "
+            f"{row['configuration']:12} | "
             f"{row['training_seconds']:7.2f}s | "
-            f"{row['throughput']:8.1f} img/s | "
-            f"{row['speedup']:.2f}x | "
+            f"{row['throughput']:8.1f} images/s | "
+            f"Speedup {speedup_text:5} | "
             f"Accuracy {row['final_accuracy']:.2f}%"
         )
 
-    print(f"\nSummary: {output}")
-    print(f"Figures: {FIGURE_DIR}")
+    print(f"\nSummary saved: {output}")
+    print(f"Figures saved: {FIGURE_DIR}")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,4 @@
+configuration,platform,device,processes,threads_per_process,training_seconds,throughput,cpu_speedup,final_accuracy
+CPU 1x4,Windows,CPU,1,4,326.4,765.93,1.0,69.37
+DDP 2x2,Windows,CPU,2,2,242.41,1031.33,1.346,68.65
+DDP 4x1,Windows,CPU,4,1,227.0,1101.33,1.438,69.09

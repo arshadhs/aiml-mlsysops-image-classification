@@ -12,7 +12,8 @@ requires-python = ">=3.10"
 dependencies = [
     "torch",
     "torchvision",
-    "PyYAML"
+    "PyYAML",
+    "matplotlib"
 ]
 
 [project.optional-dependencies]
