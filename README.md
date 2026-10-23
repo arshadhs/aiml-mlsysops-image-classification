@@ -111,7 +111,10 @@ The CPU training application is packaged in a Linux Docker image using Python 3.
 │   │   ├── benchmark_summary.csv
 │   │   └── <timestamped full-run CSV files>
 │   └── figures/
-│       └── <generated PNG figures>
+│   │   └── <generated PNG figures>
+│   └── profiles/
+│       ├── gpu_rank0_trace.json
+│       └── gpu_rank1_trace.json
 ├── data/                      # Downloaded CIFAR-10; Git-ignored
 └── notebooks/                 # Kaggle notebook, if exported
 ```
@@ -166,6 +169,23 @@ The single T4 was approximately **7.13× faster** than the Windows single-proces
 - CPU intra-op thread counts are not the same as an exclusive allocation of physical CPU cores.
 - DDP gradient synchronization is implemented, but **individual All-Reduce duration, communication overhead percentage, peak memory, and device utilization were not separately instrumented**; no quantitative breakdown is claimed.
 - Small differences in final accuracy may reflect training-order and floating-point differences among configurations.
+
+### NCCL Communication Profiling
+
+Communication profiling was performed on Kaggle using two NVIDIA Tesla T4 GPUs with PyTorch Profiler.
+
+The profiling experiment used 20 training batches per GPU and captured CPU operations, CUDA kernels, and NCCL collective communication.
+
+**Key measurements (Rank 0):**
+
+| Metric | Measurement |
+|---|---:|
+| NCCL All-Reduce kernel time | 32.104 ms |
+| NCCL All-Reduce calls | 41 |
+| Average kernel time | 0.783 ms |
+| Profiled training duration | 0.73 s |
+
+These measurements represent GPU communication activity, not necessarily communication-induced wall-clock overhead, because communication and computation may overlap.
 
 ## 7. Performance metrics and visualizations
 
@@ -310,7 +330,9 @@ This regenerates [`results/benchmarks/benchmark_summary.csv`](results/benchmarks
 
 ## 10. Reproducibility and next steps
 
-The code, full-run CSV files, `experiments.csv`, and generated figures together provide an auditable record of the five experiments. `notebooks/kaggle_gpu_training.ipynb` may also be committed after exporting it from Kaggle; the training implementation remains in `src/mlsysops_cifar10/train.py`.
+The code, full-run CSV files, `experiments.csv`, and generated figures together provide an auditable record of the five experiments.
+
+The training implementation remains in `src/mlsysops_cifar10/train.py`.
 
 Possible future work includes repeated runs with variability estimates, profiling compute versus communication, monitoring RAM/VRAM utilization, and experimenting with a larger CNN or TPU. These extensions **were not needed to produce the reported results**.
 
