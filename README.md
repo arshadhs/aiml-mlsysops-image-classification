@@ -2,7 +2,6 @@
 
 A reproducible PyTorch project comparing single-process CPU training, CPU-based Distributed Data Parallel (DDP), single-GPU training, and two-GPU DDP on the CIFAR-10 image classification task.
 
-**Course:** ML Systems Optimisation (MLSysOps), BITS Pilani  
 **Implementation:** Python, PyTorch, torchvision, Gloo, NCCL, Docker, Kaggle, Matplotlib
 
 ## 1. Overview and objectives
@@ -116,7 +115,7 @@ The CPU training application is packaged in a Linux Docker image using Python 3.
 │       ├── gpu_rank0_trace.json
 │       └── gpu_rank1_trace.json
 ├── data/                      # Downloaded CIFAR-10; Git-ignored
-└── notebooks/                 # Kaggle notebook, if exported
+└── notebooks/                 # Kaggle notebook
 ```
 
 Other repository directories, such as `configs/` and `tests/`, may be present. The training and visualization commands below do not depend on unused scaffolding.
@@ -147,13 +146,21 @@ The CPU DDP-4 configuration took about **30.5% less measured training time** tha
 
 Using the single T4 as the **GPU-specific baseline**:
 
-\[
-S_2 = \frac{T_{1\ GPU}}{T_{2\ GPU}} = \frac{45.78}{26.27} \approx 1.74
-\]
+**GPU Speedup**
 
-\[
-E_2 = \frac{S_2}{2} \times 100\% \approx 87.1\%
-\]
+$$
+S_2 = \frac{T_{\text{1 GPU}}}{T_{\text{2 GPUs}}}
+= \frac{45.78}{26.27}
+\approx 1.74
+$$
+
+**GPU Parallel Efficiency**
+
+$$
+E_2 = \frac{S_2}{2} \times 100\%
+\approx 87.1\%
+$$
+
 
 Two T4 GPUs reduced measured training time by approximately **42.6%** relative to one T4, at a fixed global batch size of 128. This is the project's direct two-device strong-scaling comparison. The two-GPU final accuracy (68.82%) remained close to the single-GPU accuracy (69.31%).
 
