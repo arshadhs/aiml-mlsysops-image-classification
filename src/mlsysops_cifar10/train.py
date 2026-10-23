@@ -289,7 +289,7 @@ def train_worker(rank, world_size, port, args):
             f"Threads {torch.get_num_threads()} | "
             f"Backend: {backend} | "
             f"Device: {device} | "
-            f"DDP initialized: {dist.is_initialized()}"
+            f"DDP initialized: {dist.is_initialized()}",
             flush=True,
         )
 
