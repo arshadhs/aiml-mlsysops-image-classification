@@ -1,4 +1,5 @@
-# Parallel and Distributed CIFAR-10 Training — ML Systems Optimisation
+# Parallel and Distributed CIFAR-10 Training 
+## ML Systems Optimisation
 
 A reproducible PyTorch project comparing single-process CPU training, CPU-based Distributed Data Parallel (DDP), single-GPU training, and two-GPU DDP on the CIFAR-10 image classification task.
 
